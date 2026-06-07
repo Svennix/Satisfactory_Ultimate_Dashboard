@@ -1,0 +1,20 @@
+# ===== Secrets (NEVER commit) =====
+secrets.local.ps1
+admin.secret
+
+# ===== Per-machine config (use config.example.json as the template) =====
+config.json
+
+# ===== Runtime data / generated =====
+www/data/
+players.db
+restart-config.json
+events.log
+backup-history.log
+*.log
+stop.flag
+
+# ===== OS noise =====
+Thumbs.db
+desktop.ini
+.DS_Store

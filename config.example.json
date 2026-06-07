@@ -1,0 +1,18 @@
+{
+  "Root": "C:\\satisfactoryserver",
+  "SaveDir": "C:\\Users\\YOU\\AppData\\Local\\FactoryGame\\Saved\\SaveGames\\server",
+  "ChildProc": "FactoryServer-Win64-Shipping-Cmd",
+  "TaskName": "SatisfactoryServer",
+  "ApiBase": "https://localhost:7777/api/v1",
+  "WebPort": 8081,
+  "WebBinds": ["127.0.0.1"],
+  "BackupDir": "C:\\Satisfactory_Backups",
+  "BackupKeepRecent": 24,
+  "BackupKeepDaily": 14,
+  "BackupKeepWeekly": 8,
+  "BackupKeepMonthly": 12,
+  "Watchdog": true,
+  "SteamCmd": "C:\\steamcmd\\steamcmd.exe",
+  "SteamAppId": "1690800",
+  "NickMap": {}
+}

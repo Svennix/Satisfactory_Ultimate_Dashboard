@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FICSIT Server Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="pip" id="livePip"></span>
+    <h1>FICSIT&nbsp;<span class="dim">Server Dashboard</span></h1>
+  </div>
+  <div class="session" id="sessionName">—</div>
+  <div class="updated">updated <span id="updatedAt">—</span></div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-view="dashboard">📊 Dashboard</button>
+  <button class="tab" data-view="backups">💾 Backups</button>
+  <button class="tab" data-view="maintenance">🔧 Maintenance</button>
+  <button class="tab" data-view="settings">⚙ Settings</button>
+</nav>
+
+<main>
+  <div id="view-dashboard" class="view">
+  <!-- Headline tiles -->
+  <section class="tiles">
+    <div class="tile big">
+      <div class="label">Players online</div>
+      <div class="value" id="tOnline">—</div>
+      <div class="sub" id="tOnlineNames">&nbsp;</div>
+    </div>
+    <div class="tile">
+      <div class="label">Server health (TPS)</div>
+      <div class="value" id="tTps">—</div>
+      <div class="sub" id="tTpsBar"><span class="meter"><i id="tpsMeter"></i></span></div>
+    </div>
+    <div class="tile">
+      <div class="label">CPU</div>
+      <div class="value" id="tCpu">—</div>
+      <div class="sub"><span class="meter"><i id="cpuMeter"></i></span></div>
+    </div>
+    <div class="tile">
+      <div class="label">RAM</div>
+      <div class="value" id="tRam">—</div>
+      <div class="sub" id="tRamSub">&nbsp;</div>
+    </div>
+    <div class="tile">
+      <div class="label">Progression</div>
+      <div class="value" id="tTier">—</div>
+      <div class="sub" id="tPhase">&nbsp;</div>
+    </div>
+    <div class="tile">
+      <div class="label">Uptime</div>
+      <div class="value" id="tUptime">—</div>
+      <div class="sub" id="tStarted">&nbsp;</div>
+    </div>
+  </section>
+
+  <!-- Controls -->
+  <section class="panel controls">
+    <h2>Controls</h2>
+    <div class="ctl-row">
+      <input type="password" id="ctlToken" placeholder="control token" autocomplete="off">
+      <button data-action="start" class="btn ok">▶ Start</button>
+      <button data-action="stop" class="btn danger">■ Stop</button>
+      <button data-action="backup" class="btn">💾 Backup now</button>
+      <button data-action="collect" class="btn ghost">⟳ Refresh data</button>
+      <span class="ctl-result" id="ctlResult"></span>
+    </div>
+  </section>
+
+  <div class="grid2">
+    <!-- Players -->
+    <section class="panel">
+      <h2>Players</h2>
+      <table class="players" id="playersTable">
+        <thead><tr><th></th><th>Name</th><th>Playtime</th><th>Sessions</th><th>Longest</th><th>Avg</th><th>Last seen</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <!-- Fun facts -->
+    <section class="panel">
+      <h2>Statistics <span class="dim">— for the geeks</span></h2>
+      <ul class="facts" id="facts"></ul>
+    </section>
+  </div>
+
+  <!-- Charts -->
+  <div class="grid2">
+    <section class="panel"><h2>Tick rate (server health)</h2><div class="chart-wrap"><canvas id="chartTps"></canvas></div></section>
+    <section class="panel"><h2>Players online</h2><div class="chart-wrap"><canvas id="chartOnline"></canvas></div></section>
+    <section class="panel"><h2>CPU &amp; RAM</h2><div class="chart-wrap"><canvas id="chartSys"></canvas></div></section>
+    <section class="panel"><h2>Save size — factory growth</h2><div class="chart-wrap"><canvas id="chartSave"></canvas></div></section>
+  </div>
+
+  <!-- Heatmap -->
+  <section class="panel">
+    <h2>Activity heatmap <span class="dim">— when people play (local time)</span></h2>
+    <div id="heatmap" class="heatmap"></div>
+  </section>
+  </div><!-- /view-dashboard -->
+
+  <div id="view-backups" class="view hidden">
+    <section class="tiles">
+      <div class="tile big"><div class="label">Backups</div><div class="value" id="bkCount">—</div><div class="sub" id="bkSize">&nbsp;</div></div>
+      <div class="tile"><div class="label">Newest</div><div class="value sm" id="bkNewest">—</div><div class="sub" id="bkNewestName">&nbsp;</div></div>
+      <div class="tile"><div class="label">Oldest</div><div class="value sm" id="bkOldest">—</div><div class="sub">&nbsp;</div></div>
+      <div class="tile"><div class="label">Next run</div><div class="value sm" id="bkNext">—</div><div class="sub">daily 04:00</div></div>
+      <div class="tile"><div class="label">Success rate</div><div class="value" id="bkRate">—</div><div class="sub" id="bkRuns">&nbsp;</div></div>
+      <div class="tile"><div class="label">Will prune next</div><div class="value" id="bkPrune">—</div><div class="sub">over policy</div></div>
+    </section>
+
+    <section class="panel controls">
+      <h2>Backup now</h2>
+      <div class="ctl-row">
+        <input type="password" id="ctlToken2" placeholder="control token" autocomplete="off">
+        <button data-action="backup" class="btn">💾 Run backup now</button>
+        <span class="ctl-result" id="ctlResult2"></span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Retention policy <span class="dim">— grandfather-father-son</span></h2>
+      <p class="muted" id="bkPolicy"></p>
+      <p class="muted">Folder: <code id="bkDir"></code></p>
+    </section>
+
+    <div class="grid2">
+      <section class="panel">
+        <h2>Backups on disk</h2>
+        <table class="players" id="bkTable">
+          <thead><tr><th>Name</th><th>Size</th><th>When</th><th>Kept by</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+      <section class="panel">
+        <h2>Recent backup runs</h2>
+        <table class="players" id="bkHist">
+          <thead><tr><th></th><th>When</th><th>Took</th><th>Trigger</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </div>
+
+    <section class="panel">
+      <h2>How to restore</h2>
+      <div class="restore-doc" id="bkRestore"></div>
+    </section>
+  </div><!-- /view-backups -->
+
+  <div id="view-maintenance" class="view hidden">
+    <section class="tiles">
+      <div class="tile big"><div class="label">Watchdog</div><div class="value" id="mWatch">—</div><div class="sub">auto-relaunch on crash</div></div>
+      <div class="tile"><div class="label">Next restart</div><div class="value sm" id="mNext">—</div><div class="sub" id="mFreq">&nbsp;</div></div>
+      <div class="tile"><div class="label">Auto-update</div><div class="value sm" id="mUpd">—</div><div class="sub">app 1690800</div></div>
+      <div class="tile"><div class="label">SteamCMD</div><div class="value sm" id="mSteam">—</div><div class="sub">&nbsp;</div></div>
+      <div class="tile"><div class="label">Server version</div><div class="value sm" id="mVersion">—</div><div class="sub" id="mVersionSub">&nbsp;</div></div>
+    </section>
+
+    <section class="panel">
+      <h2>Scheduled restart</h2>
+      <div class="form">
+        <label><input type="checkbox" id="mEnabled"> Enabled</label>
+        <label>Every
+          <select id="mFrequency">
+            <option value="daily">day</option>
+            <option value="2day">2 days</option>
+            <option value="3day">3 days</option>
+            <option value="weekly">week</option>
+          </select>
+        </label>
+        <label>at <input type="time" id="mTime" value="05:00"></label>
+        <label><input type="checkbox" id="mUpdate"> Update on each restart</label>
+        <label>Warn lead <input type="number" id="mLead" min="0" max="240" value="30" style="width:64px"> min</label>
+      </div>
+      <div class="ctl-row" style="margin-top:14px">
+        <input type="password" id="mToken" placeholder="control token" autocomplete="off">
+        <button id="saveSchedule" class="btn ok">Save schedule</button>
+        <span class="ctl-result" id="mScheduleResult"></span>
+      </div>
+      <p class="muted">In-game messaging isn't possible on a vanilla server. When players are online the restart waits out the warn-lead (logged below, and to Discord if a webhook is set) and saves the game first; with nobody online it restarts immediately.</p>
+    </section>
+
+    <section class="panel controls">
+      <h2>Manual actions</h2>
+      <div class="ctl-row">
+        <input type="password" id="mToken2" placeholder="control token" autocomplete="off">
+        <button data-action="restart" class="btn">🔄 Restart now</button>
+        <button data-action="update" class="btn">⬆ Update + restart now</button>
+        <span class="ctl-result" id="mActionResult"></span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Version history <span class="dim">— one entry per update</span></h2>
+      <table class="players" id="mVerHist">
+        <thead><tr><th>When</th><th>Version</th><th>Changelist</th><th>Steam build</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Event log <span class="dim">— watchdog · restart · update · notify · version</span></h2>
+      <table class="players" id="mEvents">
+        <thead><tr><th>When</th><th>Level</th><th>Category</th><th>Message</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div><!-- /view-maintenance -->
+
+  <div id="view-settings" class="view hidden">
+    <section class="panel">
+      <h2>Settings <span class="dim">— saved to config.json on the server</span></h2>
+      <p class="muted">Most changes apply on the next collector cycle (within a minute). <strong>Web port, bind IPs, and a rotated control token take effect only after the web server restarts.</strong></p>
+    </section>
+
+    <div class="grid2">
+      <section class="panel">
+        <h2>Paths</h2>
+        <div class="settings-grid">
+          <label>Install root<input id="cfgRoot"></label>
+          <label>Save directory<input id="cfgSaveDir"></label>
+          <label>Backup directory<input id="cfgBackupDir"></label>
+          <label>SteamCMD path<input id="cfgSteamCmd"></label>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Server</h2>
+        <div class="settings-grid">
+          <label>Game process name<input id="cfgChildProc"></label>
+          <label>Server scheduled task<input id="cfgTaskName"></label>
+          <label>API base URL<input id="cfgApiBase"></label>
+          <label>Steam app id<input id="cfgSteamAppId"></label>
+          <label class="chk"><input type="checkbox" id="cfgWatchdog"> Watchdog (relaunch on crash)</label>
+        </div>
+      </section>
+    </div>
+
+    <div class="grid2">
+      <section class="panel">
+        <h2>Web server</h2>
+        <div class="settings-grid">
+          <label>Port<input id="cfgWebPort" type="number" min="1" max="65535"></label>
+          <label>Bind IPs (comma-separated)<input id="cfgWebBinds"></label>
+        </div>
+        <p class="muted">Loopback + your management/VPN IP only — never a public/DMZ NIC.</p>
+      </section>
+      <section class="panel">
+        <h2>Backup retention</h2>
+        <div class="settings-grid">
+          <label>Keep recent (hours)<input id="cfgKeepRecent" type="number" min="0"></label>
+          <label>Daily (days)<input id="cfgKeepDaily" type="number" min="0"></label>
+          <label>Weekly (weeks)<input id="cfgKeepWeekly" type="number" min="0"></label>
+          <label>Monthly (months)<input id="cfgKeepMonthly" type="number" min="0"></label>
+        </div>
+      </section>
+    </div>
+
+    <div class="grid2">
+      <section class="panel">
+        <h2>Notifications</h2>
+        <div class="settings-grid">
+          <label>Discord webhook URL<input id="cfgWebhook" type="text" placeholder="https://discord.com/api/webhooks/…"></label>
+          <label>Rotate control token<input id="cfgRotateToken" type="password" placeholder="leave blank to keep current"></label>
+        </div>
+      </section>
+      <section class="panel">
+        <h2>Nicknames <span class="dim">— SteamID64 = name, one per line</span></h2>
+        <textarea id="cfgNickMap" rows="5" placeholder="76561197997080937 = Svenni"></textarea>
+      </section>
+    </div>
+
+    <section class="panel controls">
+      <div class="ctl-row">
+        <input type="password" id="cfgToken" placeholder="control token" autocomplete="off">
+        <button id="saveSettings" class="btn ok">Save settings</button>
+        <span class="ctl-result" id="cfgResult"></span>
+      </div>
+    </section>
+  </div><!-- /view-settings -->
+</main>
+
+<footer>Bound to management network only · <span id="apiState"></span></footer>
+
+<script src="vendor/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
