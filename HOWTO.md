@@ -16,8 +16,8 @@ no third-party cloud.
 
 ## 2. Install (≈2 minutes)
 ```powershell
-# from an ELEVATED PowerShell 7, in the dashboard folder:
-git clone <your-repo-url> dashboard
+# from an ELEVATED PowerShell 7:
+git clone https://github.com/Svennix/Satisfactory_Ultimate_Dashboard.git dashboard
 cd dashboard
 .\setup.ps1
 ```

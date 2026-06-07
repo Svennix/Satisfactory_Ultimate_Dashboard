@@ -84,3 +84,6 @@ the world for everyone connected):
 ```
 After an upload you can also load it from the in-game **Server Manager → Manage Saves**.
 
+## License
+MIT — see [LICENSE](LICENSE).
+
