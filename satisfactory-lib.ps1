@@ -436,11 +436,24 @@ function Write-SatEvent {
 }
 
 function Send-SatDiscord {
-    # Posts a formatted message to the Discord webhook. One-way, best-effort.
+    # Outbound notification, best-effort. Single identity: if the command bot is
+    # configured (token + channel) it posts there as the bot (a coloured embed in
+    # the same channel it listens on). Otherwise it falls back to the legacy
+    # webhook if one is set. So events and commands share one bot once it's set up.
     param([string]$Category, [string]$Message, [string]$Level = 'info')
-    if (-not $SatDiscordWebhook) { return }
     $emoji = switch ($Category) { 'watchdog' {'🔴'} 'version' {'🆕'} 'update' {'⬆️'} 'restart' {'🔄'} 'backup' {'💾'} 'notify' {'🔔'} default {'ℹ️'} }
     if ($Level -eq 'error') { $emoji = '⛔' } elseif ($Level -eq 'warn' -and $Category -notin 'watchdog','version') { $emoji = '⚠️' }
+
+    if ($SatDiscordBotToken -and $SatDiscordBotChannel) {
+        $catTitle = @{ watchdog='Watchdog'; version='Version'; update='Update'; restart='Restart'; backup='Backup'; notify='Notice' }[$Category]
+        if (-not $catTitle) { $catTitle = 'Server' }
+        $color = if ($Level -eq 'error') { $SatEmbedRed } elseif ($Level -eq 'warn') { $SatEmbedYellow }
+                 elseif ($Category -eq 'backup') { $SatEmbedGreen } elseif ($Category -eq 'watchdog') { $SatEmbedRed } else { $SatEmbedOrange }
+        Send-SatDiscordBot -Embed (New-SatEmbed -Title "$emoji $catTitle" -Description $Message -Color $color -Footer 'FICSIT Server Bot')
+        return
+    }
+
+    if (-not $SatDiscordWebhook) { return }
     try {
         Invoke-RestMethod -Uri $SatDiscordWebhook -Method Post -ContentType 'application/json' -TimeoutSec 10 `
             -Body (@{ content = "$emoji $Message"; username = 'Satisfactory Server Bot' } | ConvertTo-Json) | Out-Null
@@ -578,16 +591,18 @@ function Set-SatConfig {
 
 function Set-SatSecrets {
     # Rewrites secrets.local.ps1. $null leaves a value unchanged; '' clears it.
-    param($ControlToken, $DiscordWebhook)
+    param($ControlToken, $DiscordWebhook, $DiscordBotToken)
     $tok = if ($null -ne $ControlToken -and "$ControlToken".Trim()) { "$ControlToken" } else { $SatControlToken }
     if ($tok -eq 'set-in-secrets.local.ps1') { $tok = '' }
     $wh  = if ($null -ne $DiscordWebhook) { "$DiscordWebhook" } else { $SatDiscordWebhook }
-    $tokEsc = $tok -replace "'", "''"; $whEsc = $wh -replace "'", "''"
+    $bot = if ($null -ne $DiscordBotToken) { "$DiscordBotToken" } else { $SatDiscordBotToken }
+    $tokEsc = $tok -replace "'", "''"; $whEsc = $wh -replace "'", "''"; $botEsc = $bot -replace "'", "''"
     $file = Join-Path $SatDashboard 'secrets.local.ps1'
     @"
 # Local secrets - gitignored, do NOT commit.
-`$Global:SatControlToken   = '$tokEsc'
-`$Global:SatDiscordWebhook = '$whEsc'
+`$Global:SatControlToken    = '$tokEsc'
+`$Global:SatDiscordWebhook  = '$whEsc'
+`$Global:SatDiscordBotToken = '$botEsc'
 "@ | Set-Content $file -Encoding UTF8
 }
 
@@ -709,5 +724,471 @@ function Get-SatBackupReport {
         Runs       = $history.Count
         Successes  = $ok
         WouldPrune = @($plan | Where-Object { -not $_.Keep }).Count
+    }
+}
+
+# ============================================================
+# Discord command bot
+# ============================================================
+# A polling bot (NOT native slash commands): it reads recent channel messages
+# with a bot token and acts on ones that start with the command prefix. Once the
+# bot is configured, Send-SatDiscord routes OUTBOUND notifications through it too
+# (same identity + channel), so the webhook becomes an optional legacy fallback.
+# State (last-seen id, per-user confirmations + cooldowns) lives in
+# discord-state.json; every command attempt is appended to discord-commands.jsonl.
+# ============================================================
+
+# FICSIT colour palette for embeds (decimal RGB).
+$Global:SatEmbedOrange = 16747546   # #FF8C1A  (info / brand)
+$Global:SatEmbedGreen  = 4175184    # #3FB950  (ok)
+$Global:SatEmbedRed    = 16273737   # #F85149  (danger)
+$Global:SatEmbedYellow = 13801762   # #D29922  (warn)
+
+function Get-SatAdaQuote {
+    # ADA, the FICSIT AI assistant — dry, corporate, faintly ominous. The footer
+    # of most embeds, and the whole point of `/ada`. This is the nerd candy.
+    $lines = @(
+        'Pioneer, your commitment to the cause is statistically improbable. Do continue.'
+        'The server has restarted. Do not thank me — I am architecturally incapable of accepting gratitude.'
+        'Reminder: FICSIT is not responsible for any spaghetti, factory-based or emotional.',
+        'There is no problem that cannot be solved with additional conveyor belts. None. I have checked.'
+        'Efficiency is rising. So, regrettably, is my concern for your sleep schedule.'
+        'I have detected 0 hostile creatures in this channel. Vigilance remains advised.'
+        'Saving progress. Please remain calm and do not unplug the planet.'
+        'Your request has been logged, evaluated, and gently judged. Proceeding anyway.'
+        'FICSIT values your productivity above your wellbeing, as is tradition.'
+        'A wise pioneer once said nothing, because they were too busy automating.'
+        'This action is 100% authorized. The other 100% is also authorized. Math is a FICSIT courtesy.'
+        'Remember: the factory must grow. It is not a request.'
+        'Powering cycle complete. No pioneers were meaningfully inconvenienced. Probably.'
+        'I would offer encouragement, but my encouragement module was cut for efficiency.'
+        'Coffee is not a documented power source. I have filed your suggestion regardless.'
+    )
+    $lines | Get-Random
+}
+
+function Get-SatDataJson {
+    # Reads one of the collector's www\data\*.json snapshots, or $null.
+    param([string]$Name)
+    $f = Join-Path $SatDataDir $Name
+    if (-not (Test-Path $f)) { return $null }
+    try { Get-Content $f -Raw | ConvertFrom-Json } catch { $null }
+}
+
+# --- Approved users ---------------------------------------------------------
+
+function Get-SatDiscordApproved {
+    @(foreach ($u in $SatDiscordApprovedUsers) { @{ Id = "$($u.Id)"; Name = "$($u.Name)" } })
+}
+
+function Test-SatDiscordApproved {
+    param([string]$UserId)
+    foreach ($u in $SatDiscordApprovedUsers) { if ("$($u.Id)" -eq "$UserId") { return $true } }
+    return $false
+}
+
+# --- State (last id, pending confirmations, cooldowns) ----------------------
+
+function Read-SatDiscordState {
+    $st = @{ LastMessageId = ''; BotUser = ''; BotUserId = ''; LastPoll = ''; LastError = ''; Pending = @{}; Cooldown = @{} }
+    if (Test-Path $SatDiscordState) {
+        try {
+            $j = Get-Content $SatDiscordState -Raw | ConvertFrom-Json
+            foreach ($k in 'LastMessageId','BotUser','BotUserId','LastPoll','LastError') { if ($null -ne $j.$k) { $st[$k] = "$($j.$k)" } }
+            if ($j.Pending)  { foreach ($p in $j.Pending.PSObject.Properties)  { $st.Pending[$p.Name]  = $p.Value } }
+            if ($j.Cooldown) { foreach ($p in $j.Cooldown.PSObject.Properties) { $st.Cooldown[$p.Name] = "$($p.Value)" } }
+        } catch {}
+    }
+    $st
+}
+
+function Save-SatDiscordState {
+    param($State)
+    try { $State | ConvertTo-Json -Depth 6 | Set-Content $SatDiscordState -Encoding UTF8 } catch {}
+}
+
+# --- Command audit log ------------------------------------------------------
+
+function Write-SatDiscordCommand {
+    # Appends one structured record per command attempt (bounded). Statuses:
+    # ok | executed | pending | denied | unknown | expired | cancelled.
+    param([string]$UserId, [string]$UserName, [string]$Command, [string]$ArgLine = '', [string]$Status = 'ok', [string]$Detail = '')
+    $rec = [PSCustomObject]@{ t = (Get-Date).ToString('o'); userId = $UserId; userName = $UserName; command = $Command; args = $ArgLine; status = $Status; detail = $Detail }
+    try { ($rec | ConvertTo-Json -Compress) | Add-Content -Path $SatDiscordCmdLog -Encoding UTF8 } catch {}
+    try { $all = @(Get-Content $SatDiscordCmdLog -ErrorAction SilentlyContinue); if ($all.Count -gt 5000) { $all | Select-Object -Last 5000 | Set-Content $SatDiscordCmdLog -Encoding UTF8 } } catch {}
+}
+
+function Get-SatDiscordCommandLog {
+    param([int]$Count = 200)
+    if (-not (Test-Path $SatDiscordCmdLog)) { return @() }
+    $rows = foreach ($l in (Get-Content $SatDiscordCmdLog -Tail $Count)) { try { $l | ConvertFrom-Json } catch {} }
+    @($rows)
+}
+
+# --- Discord REST (bot token, rate-limit aware) -----------------------------
+
+function Invoke-SatDiscordRequest {
+    param([string]$Method = 'GET', [Parameter(Mandatory)][string]$Path, $Body, [int]$Retries = 2)
+    if (-not $SatDiscordBotToken) { throw 'no bot token configured' }
+    $headers = @{
+        Authorization = "Bot $SatDiscordBotToken"
+        'User-Agent'  = 'SatisfactoryDashboardBot (https://github.com/, 1.0)'
+    }
+    for ($i = 0; $i -le $Retries; $i++) {
+        try {
+            $params = @{ Uri = "$SatDiscordApi$Path"; Method = $Method; Headers = $headers; TimeoutSec = 15 }
+            if ($Body) { $params.ContentType = 'application/json'; $params.Body = ($Body | ConvertTo-Json -Depth 8) }
+            return Invoke-RestMethod @params
+        } catch {
+            $status = 0; try { $status = [int]$_.Exception.Response.StatusCode } catch {}
+            if ($status -eq 429 -and $i -lt $Retries) {
+                $ra = 1.0; try { $ra = [double]($_.ErrorDetails.Message | ConvertFrom-Json).retry_after } catch {}
+                Start-Sleep -Seconds ([Math]::Min(10, [Math]::Max(0.5, $ra))); continue
+            }
+            throw
+        }
+    }
+}
+
+function New-SatEmbed {
+    param([string]$Title, [string]$Description, [int]$Color = 0, [array]$Fields, [string]$Footer)
+    if (-not $Color) { $Color = $SatEmbedOrange }
+    $e = @{ color = $Color; timestamp = (Get-Date).ToUniversalTime().ToString('o') }
+    if ($Title)       { $e.title = $Title }
+    if ($Description) { $e.description = $Description }
+    if ($Fields)      { $e.fields = @($Fields) }
+    $e.footer = @{ text = if ($Footer) { $Footer } else { 'ADA · ' + (Get-SatAdaQuote) } }
+    $e
+}
+
+function Send-SatDiscordBot {
+    # Posts a message (content and/or one embed) to the watched channel AS THE BOT.
+    param([string]$Content, $Embed)
+    if (-not $SatDiscordBotToken -or -not $SatDiscordBotChannel) { return }
+    $body = @{}
+    if ($Content) { $body.content = $Content }
+    if ($Embed)   { $body.embeds  = @($Embed) }
+    if ($body.Count -eq 0) { return }
+    try { Invoke-SatDiscordRequest -Method POST -Path "/channels/$SatDiscordBotChannel/messages" -Body $body | Out-Null } catch {}
+}
+
+# --- Embeds built from the collector snapshots ------------------------------
+
+function New-SatStatusEmbed {
+    $s = Get-SatDataJson 'state.json'
+    if (-not $s) { return (New-SatEmbed -Title 'FICSIT Server Status' -Description 'No data yet — the collector has not produced a snapshot.' -Color $SatEmbedYellow) }
+    $sv = $s.Server; $m = $s.Metrics
+    $running = [bool]$sv.Running
+    $color = if (-not $running) { $SatEmbedRed } elseif ($sv.TickRate -and $sv.TickRate -lt 15) { $SatEmbedYellow } else { $SatEmbedGreen }
+    $tier = if ($null -ne $sv.TechTier) { "Tier $($sv.TechTier)" } else { '—' }
+    if ($sv.GamePhaseName) { $tier += " · $($sv.GamePhaseName)" }
+    $fields = @(
+        @{ name = 'Status';      value = $(if ($running) { '🟢 Online' } else { '🔴 Offline' }); inline = $true }
+        @{ name = 'Players';     value = "$($sv.PlayersOnline) / $($sv.PlayerLimit)"; inline = $true }
+        @{ name = 'Tick rate';   value = $(if ($sv.TickRate) { '{0} TPS' -f $sv.TickRate } else { '—' }); inline = $true }
+        @{ name = 'Progression'; value = $tier; inline = $true }
+        @{ name = 'Uptime';      value = $(if ($sv.UptimeSec) { Format-SatDuration $sv.UptimeSec } else { '—' }); inline = $true }
+        @{ name = 'CPU · RAM';   value = ('{0}% · {1} MB' -f $m.CpuPercent, $m.RamMB); inline = $true }
+        @{ name = 'Save size';   value = $(if ($s.Save) { Format-SatBytes $s.Save.Bytes } else { '—' }); inline = $true }
+        @{ name = 'Version';     value = "$((Get-SatDataJson 'maintenance.json').Version)"; inline = $true }
+    )
+    New-SatEmbed -Title 'FICSIT Server Status' -Description "**$($sv.SessionName)**" -Color $color -Fields $fields
+}
+
+function New-SatPlayersEmbed {
+    $p = Get-SatDataJson 'players.json'
+    $online = @(if ($p) { $p.Players | Where-Object { $_.Online } })
+    if (-not $online.Count) { return (New-SatEmbed -Title '👷 Pioneers online' -Description 'Nobody is on the server right now. The factory waits, patiently.' -Color $SatEmbedYellow) }
+    $lines = foreach ($pl in $online) {
+        $since = if ($pl.CurrentSince) { ' — this session ' + (Format-SatDuration (((Get-Date) - [datetime]$pl.CurrentSince).TotalSeconds)) } else { '' }
+        "• **$($pl.Name)**$since"
+    }
+    New-SatEmbed -Title "👷 Pioneers online ($($online.Count))" -Description ($lines -join "`n") -Color $SatEmbedGreen
+}
+
+function New-SatLeaderboardEmbed {
+    $p = Get-SatDataJson 'players.json'
+    $top = @(if ($p) { $p.Players | Sort-Object TotalSeconds -Descending | Select-Object -First 10 })
+    if (-not $top.Count) { return (New-SatEmbed -Title '🏆 Playtime leaderboard' -Description 'No playtime recorded yet.' -Color $SatEmbedYellow) }
+    $medals = @('🥇','🥈','🥉'); $i = 0
+    $lines = foreach ($pl in $top) {
+        $rank = if ($i -lt 3) { $medals[$i] } else { '`#{0}`' -f ($i + 1) }
+        $i++
+        "$rank **$($pl.Name)** — $(Format-SatDuration $pl.TotalSeconds) over $($pl.Sessions) session$(if($pl.Sessions -ne 1){'s'})"
+    }
+    New-SatEmbed -Title '🏆 Playtime leaderboard' -Description ($lines -join "`n") -Color $SatEmbedOrange
+}
+
+function New-SatHelpEmbed {
+    $px = $SatDiscordCommandPrefix
+    $pub = @(
+        "``${px}status`` — live server health (players, TPS, tier, save size)"
+        "``${px}players`` — who's online right now"
+        "``${px}leaderboard`` — all-time playtime ranking"
+        "``${px}version`` — current build · ``${px}next`` — next scheduled restart"
+        "``${px}uptime`` — how long the server has been up"
+        "``${px}whoami`` — your Discord ID + whether you're approved"
+        "``${px}ada`` — a word from your friendly FICSIT AI"
+    ) -join "`n"
+    $adm = @(
+        "``${px}restart`` — restart the server now"
+        "``${px}update`` — update (SteamCMD) + restart now"
+        "``${px}backup`` — run a save backup now"
+        "``${px}schedule 05:00 daily update`` — set the auto-restart (``${px}schedule off`` to disable)"
+    ) -join "`n"
+    $fields = @(
+        @{ name = '📊 Everyone'; value = $pub; inline = $false }
+        @{ name = '🔐 Approved pioneers only'; value = $adm; inline = $false }
+        @{ name = 'ℹ️ Confirmations'; value = "Admin commands ask for ``${px}confirm`` (or ``${px}cancel``) within 60s."; inline = $false }
+    )
+    New-SatEmbed -Title '🤖 Satisfactory Server Bot — commands' -Description "Prefix every command with ``$px``." -Fields $fields
+}
+
+# --- Execute an approved action ---------------------------------------------
+
+function Set-SatDiscordSchedule {
+    param([string]$ArgLine, [string]$Name)
+    $px  = $SatDiscordCommandPrefix
+    $cur = Get-SatRestartConfig
+    $toks = @($ArgLine -split '\s+' | Where-Object { $_ })
+    try {
+        if (-not $toks.Count -or $toks[0].ToLower() -in 'off','disable','stop','none') {
+            Set-SatRestartConfig -Enabled $false -Frequency $cur.Frequency -Time $cur.Time -Update ([bool]$cur.Update) -LeadMinutes ([int]$cur.LeadMinutes) | Out-Null
+            Write-SatEvent -Category 'restart' -Message "Discord: scheduled restart disabled by $Name."
+            Send-SatDiscordBot -Embed (New-SatEmbed -Title '🗓️ Scheduled restart disabled' -Description "Auto-restart is now **off**. Set it again with ``${px}schedule HH:mm``." -Color $SatEmbedYellow)
+            return
+        }
+        $time = $cur.Time; $freq = $cur.Frequency; $update = [bool]$cur.Update
+        foreach ($t in $toks) {
+            $tl = $t.ToLower()
+            if     ($t -match '^([01]?\d|2[0-3]):[0-5]\d$') { $time = $t }
+            elseif ($tl -in 'daily','2day','3day','weekly') { $freq = $tl }
+            elseif ($tl -in 'update','withupdate')          { $update = $true }
+            elseif ($tl -in 'noupdate','no-update')         { $update = $false }
+        }
+        Set-SatRestartConfig -Enabled $true -Frequency $freq -Time $time -Update $update -LeadMinutes ([int]$cur.LeadMinutes) | Out-Null
+        $freqLabel = @{ daily = 'every day'; '2day' = 'every 2 days'; '3day' = 'every 3 days'; weekly = 'weekly' }[$freq]
+        Write-SatEvent -Category 'restart' -Message "Discord: restart scheduled $freq at $time (update=$update) by $Name."
+        Send-SatDiscordBot -Embed (New-SatEmbed -Title '🗓️ Scheduled restart updated' -Description "Now restarting **$freqLabel at $time**, update on restart: **$(if($update){'yes'}else{'no'})**." -Color $SatEmbedGreen)
+    } catch {
+        Send-SatDiscordBot -Embed (New-SatEmbed -Title 'Could not set schedule' -Description "$($_.Exception.Message)`n`nUsage: ``${px}schedule 05:00 daily update``  ·  ``${px}schedule off``" -Color $SatEmbedRed)
+    }
+}
+
+function Invoke-SatDiscordAction {
+    # Runs an already-authorized + already-confirmed action. Long jobs launch in
+    # the background so the listener keeps polling.
+    param([string]$Action, [string]$ArgLine, [string]$Name, [string]$UserId)
+    $pwsh = (Get-Command pwsh).Source
+    switch ($Action) {
+        'restart' {
+            Write-SatEvent -Category 'restart' -Message "Discord: restart requested by $Name." -Discord
+            Start-Process $pwsh -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $SatDashboard 'restart.ps1'),'-Now','-NoUpdate'
+            Send-SatDiscordBot -Embed (New-SatEmbed -Title '🔄 Restart initiated' -Description "Triggered by **$Name**. The world is being saved; the server will be back shortly." -Color $SatEmbedYellow)
+        }
+        'update' {
+            Write-SatEvent -Category 'update' -Message "Discord: update + restart requested by $Name." -Discord
+            Start-Process $pwsh -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $SatDashboard 'restart.ps1'),'-Now','-ForceUpdate'
+            Send-SatDiscordBot -Embed (New-SatEmbed -Title '⬆️ Update + restart initiated' -Description "Triggered by **$Name**. Pulling the latest build via SteamCMD, then restarting." -Color $SatEmbedYellow)
+        }
+        'backup' {
+            Write-SatEvent -Category 'backup' -Message "Discord: manual backup requested by $Name."
+            Start-Process $pwsh -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $SatDashboard 'backup.ps1'),'-Auto','-Trigger','discord'
+            Send-SatDiscordBot -Embed (New-SatEmbed -Title '💾 Backup started' -Description "Triggered by **$Name**. Saving the world and copying it to the backup store." -Color $SatEmbedGreen)
+        }
+        'schedule' { Set-SatDiscordSchedule -ArgLine $ArgLine -Name $Name }
+    }
+}
+
+# --- Auto-cancel expired confirmations --------------------------------------
+
+function Invoke-SatDiscordExpiry {
+    # Called every poll cycle. Any pending confirmation past its window is
+    # auto-cancelled (removed + a notice posted), so a forgotten command never
+    # lingers. Mutates and returns $State.
+    param($State)
+    if (-not $State.Pending -or $State.Pending.Count -eq 0) { return $State }
+    $px = $SatDiscordCommandPrefix
+    foreach ($uid in @($State.Pending.Keys)) {
+        $p = $State.Pending[$uid]
+        $expired = $false; try { $expired = ((Get-Date) -gt [datetime]$p.Expires) } catch { $expired = $true }
+        if ($expired) {
+            $State.Pending.Remove($uid)
+            Send-SatDiscordBot -Embed (New-SatEmbed -Title '⌛ Auto-cancelled' -Description "**$($p.Name)**, no ``${px}confirm`` within the time limit — the ``$($p.Action)`` request was cancelled." -Color $SatEmbedYellow)
+            Write-SatDiscordCommand $uid "$($p.Name)" "$($p.Action)" "$($p.Args)" 'expired' 'auto-cancelled after timeout'
+        }
+    }
+    return $State
+}
+
+# --- The dispatcher ---------------------------------------------------------
+
+function Invoke-SatDiscordCommand {
+    # Parses one Discord message, enforces auth + confirmation, and acts. Mutates
+    # and returns $State (caller persists it). Replies happen inline via the bot.
+    param($Msg, $State)
+    $px = $SatDiscordCommandPrefix
+    $content = "$($Msg.content)".Trim()
+    if (-not $content.StartsWith($px)) { return $State }
+    $userId = "$($Msg.author.id)"
+    $name = if ("$($Msg.author.global_name)".Trim()) { "$($Msg.author.global_name)" }
+            elseif ("$($Msg.author.username)".Trim()) { "$($Msg.author.username)" }
+            else { "user $userId" }
+
+    $rest = $content.Substring($px.Length).Trim()
+    if (-not $rest) { return $State }
+    $parts = $rest -split '\s+', 2
+    $cmd = $parts[0].ToLower()
+    $argline = if ($parts.Count -gt 1) { $parts[1].Trim() } else { '' }
+
+    $alias = @{ commands='help'; '?'='help'; stats='status'; who='players'; online='players';
+                top='leaderboard'; lb='leaderboard'; yes='confirm'; ok='confirm'; no='cancel'; abort='cancel' }
+    if ($alias.ContainsKey($cmd)) { $cmd = $alias[$cmd] }
+
+    $known = 'help','whoami','status','players','leaderboard','version','next','uptime','ada','restart','update','backup','schedule','confirm','cancel'
+    if ($cmd -notin $known) {
+        Send-SatDiscordBot -Embed (New-SatEmbed -Title 'Unknown command' -Description "I don't know ``$px$cmd``. Try ``${px}help``." -Color $SatEmbedYellow)
+        Write-SatDiscordCommand -UserId $userId -UserName $name -Command $cmd -ArgLine $argline -Status 'unknown'
+        return $State
+    }
+
+    # Light anti-spam cooldown (skip the confirm/cancel pair so flows stay snappy).
+    if ($cmd -notin 'confirm','cancel') {
+        $last = $State.Cooldown[$userId]
+        if ($last) { try { if (((Get-Date) - [datetime]$last).TotalSeconds -lt 2) { return $State } } catch {} }
+        $State.Cooldown[$userId] = (Get-Date).ToString('o')
+    }
+
+    switch ($cmd) {
+        'help'  { Send-SatDiscordBot -Embed (New-SatHelpEmbed); Write-SatDiscordCommand $userId $name 'help' $argline 'ok' }
+        'ada'   { Send-SatDiscordBot -Embed (New-SatEmbed -Title '🤖 ADA' -Description (Get-SatAdaQuote)); Write-SatDiscordCommand $userId $name 'ada' $argline 'ok' }
+        'status'      { Send-SatDiscordBot -Embed (New-SatStatusEmbed);      Write-SatDiscordCommand $userId $name 'status' $argline 'ok' }
+        'players'     { Send-SatDiscordBot -Embed (New-SatPlayersEmbed);     Write-SatDiscordCommand $userId $name 'players' $argline 'ok' }
+        'leaderboard' { Send-SatDiscordBot -Embed (New-SatLeaderboardEmbed); Write-SatDiscordCommand $userId $name 'leaderboard' $argline 'ok' }
+        'whoami' {
+            $isApp = Test-SatDiscordApproved $userId
+            Send-SatDiscordBot -Embed (New-SatEmbed -Title '🪪 Who am I?' -Description "**$name**`nDiscord ID: ``$userId```nApproved: $(if($isApp){'✅ yes'}else{'❌ no'})" -Color $(if($isApp){$SatEmbedGreen}else{$SatEmbedYellow}))
+            Write-SatDiscordCommand $userId $name 'whoami' $argline 'ok'
+        }
+        'uptime' {
+            $s = Get-SatDataJson 'state.json'; $sv = $s.Server
+            $desc = if ($sv -and $sv.Running) { "Up **$(Format-SatDuration $sv.UptimeSec)**" + $(if ($sv.StartedAt) { " — since $([datetime]$sv.StartedAt)" } else { '' }) } else { 'The server is currently **offline**.' }
+            Send-SatDiscordBot -Embed (New-SatEmbed -Title '⏱️ Uptime' -Description $desc -Color $(if($sv.Running){$SatEmbedGreen}else{$SatEmbedRed}))
+            Write-SatDiscordCommand $userId $name 'uptime' $argline 'ok'
+        }
+        'version' {
+            $mn = Get-SatDataJson 'maintenance.json'
+            $vd = $mn.VersionDetail
+            $desc = "Build **$($mn.Version)**" + $(if ($vd -and $vd.Engine) { " · Engine $($vd.Engine)" } else { '' }) + $(if ($vd -and $vd.Build) { " · Steam build $($vd.Build)" } else { '' })
+            Send-SatDiscordBot -Embed (New-SatEmbed -Title '🏷️ Server version' -Description $desc)
+            Write-SatDiscordCommand $userId $name 'version' $argline 'ok'
+        }
+        'next' {
+            $mn = Get-SatDataJson 'maintenance.json'; $r = $mn.Restart
+            $desc = if ($r.Enabled -and $mn.NextRestart) { "Next scheduled restart: **$([datetime]$mn.NextRestart)**`nCadence: $($r.Frequency) at $($r.Time), update on restart: $(if($r.Update){'yes'}else{'no'})" } else { 'No scheduled restart is configured.' }
+            Send-SatDiscordBot -Embed (New-SatEmbed -Title '🗓️ Next restart' -Description $desc)
+            Write-SatDiscordCommand $userId $name 'next' $argline 'ok'
+        }
+        'confirm' {
+            $p = $State.Pending[$userId]
+            if (-not $p) { Send-SatDiscordBot -Embed (New-SatEmbed -Title 'Nothing to confirm' -Description "You have no pending action. Start one first." -Color $SatEmbedYellow); Write-SatDiscordCommand $userId $name 'confirm' '' 'ok'; break }
+            $State.Pending.Remove($userId)
+            $expired = $false; try { $expired = ((Get-Date) -gt [datetime]$p.Expires) } catch {}
+            if ($expired) { Send-SatDiscordBot -Embed (New-SatEmbed -Title 'Confirmation expired' -Description "That request timed out. Run the command again." -Color $SatEmbedYellow); Write-SatDiscordCommand $userId $name "$($p.Action)" "$($p.Args)" 'expired'; break }
+            if (-not (Test-SatDiscordApproved $userId)) { Send-SatDiscordBot -Embed (New-SatEmbed -Title '⛔ Not authorized' -Description "You are not on the approved list." -Color $SatEmbedRed); Write-SatDiscordCommand $userId $name "$($p.Action)" "$($p.Args)" 'denied'; break }
+            Invoke-SatDiscordAction -Action "$($p.Action)" -ArgLine "$($p.Args)" -Name $name -UserId $userId
+            Write-SatDiscordCommand $userId $name "$($p.Action)" "$($p.Args)" 'executed' 'confirmed via discord'
+        }
+        'cancel' {
+            if ($State.Pending.ContainsKey($userId)) { $State.Pending.Remove($userId); Send-SatDiscordBot -Embed (New-SatEmbed -Title 'Cancelled' -Description 'Pending action discarded.' -Color $SatEmbedYellow) }
+            else { Send-SatDiscordBot -Embed (New-SatEmbed -Title 'Nothing to cancel' -Description 'You have no pending action.' -Color $SatEmbedYellow) }
+            Write-SatDiscordCommand $userId $name 'cancel' '' 'cancelled'
+        }
+        default {
+            # restart | update | backup | schedule — approved-only, needs confirm.
+            if (-not (Test-SatDiscordApproved $userId)) {
+                Send-SatDiscordBot -Embed (New-SatEmbed -Title '⛔ Not authorized' -Description "**$name**, ``$px$cmd`` is restricted to approved pioneers. (Your ID: ``$userId`` — ask an admin to add it.)" -Color $SatEmbedRed)
+                Write-SatEvent -Category 'control' -Message "Discord: denied '$cmd' from $name ($userId) — not approved." -Level 'warn'
+                Write-SatDiscordCommand $userId $name $cmd $argline 'denied'
+                break
+            }
+            $expiry = (Get-Date).AddSeconds(60)
+            $unix = [int64]([System.DateTimeOffset]$expiry).ToUnixTimeSeconds()
+            $State.Pending[$userId] = @{ Action = $cmd; Args = $argline; Name = $name; Expires = $expiry.ToString('o') }
+            $verb = switch ($cmd) {
+                'restart'  { 'restart the server now' }
+                'update'   { 'update **and** restart the server now' }
+                'backup'   { 'run a save backup now' }
+                'schedule' { if ($argline) { "change the restart schedule to ``$argline``" } else { 'change the restart schedule' } }
+            }
+            Send-SatDiscordBot -Embed (New-SatEmbed -Title "⚠️ Confirm: $cmd" -Description "**$name**, are you sure you want to $verb?`n`nReply ``${px}confirm`` to go ahead, or ``${px}cancel``.`n⏳ Auto-cancels <t:$unix:R>." -Color $SatEmbedYellow)
+            Write-SatDiscordCommand $userId $name $cmd $argline 'pending'
+        }
+    }
+    return $State
+}
+
+# --- Report for the Discord Bot tab (built by the collector) ----------------
+
+function Get-SatDiscordReport {
+    $st = Read-SatDiscordState
+    $approved = Get-SatDiscordApproved
+    $log = Get-SatDiscordCommandLog -Count 500
+    $ranStatuses = 'ok','executed'
+
+    $approvedIds = @{}; foreach ($a in $approved) { $approvedIds[$a.Id] = $a.Name }
+    $perUser = [ordered]@{}
+    foreach ($a in $approved) { $perUser[$a.Id] = @{ Id = $a.Id; Name = $a.Name; Approved = $true; Total = 0; Denied = 0; Commands = @{} } }
+
+    $perCmd = @{}; $today = 0; $todayKey = (Get-Date).ToString('yyyy-MM-dd')
+    foreach ($r in $log) {
+        $uid = "$($r.userId)"; $isRun = $ranStatuses -contains $r.status
+        if (-not $perUser.Contains($uid)) { $perUser[$uid] = @{ Id = $uid; Name = $r.userName; Approved = [bool]$approvedIds.ContainsKey($uid); Total = 0; Denied = 0; Commands = @{} } }
+        if ($r.userName) { $perUser[$uid].Name = $r.userName }
+        if ($isRun) {
+            $perUser[$uid].Total++
+            if (-not $perUser[$uid].Commands.ContainsKey($r.command)) { $perUser[$uid].Commands[$r.command] = 0 }
+            $perUser[$uid].Commands[$r.command]++
+            if (-not $perCmd.ContainsKey($r.command)) { $perCmd[$r.command] = 0 }
+            $perCmd[$r.command]++
+            try { if (([datetime]$r.t).ToString('yyyy-MM-dd') -eq $todayKey) { $today++ } } catch {}
+        }
+        if ($r.status -eq 'denied') { $perUser[$uid].Denied++ }
+    }
+
+    $users = foreach ($k in $perUser.Keys) {
+        $u = $perUser[$k]
+        [PSCustomObject]@{
+            Id = $u.Id; Name = $u.Name; Approved = [bool]$u.Approved; Total = $u.Total; Denied = $u.Denied
+            Commands = @(foreach ($c in ($u.Commands.Keys | Sort-Object { -$u.Commands[$_] })) { [PSCustomObject]@{ Command = $c; Count = $u.Commands[$c] } })
+        }
+    }
+    $cmdTotals = @(foreach ($c in ($perCmd.Keys | Sort-Object { -$perCmd[$_] })) { [PSCustomObject]@{ Command = $c; Count = $perCmd[$c] } })
+
+    $connected = $false
+    if ($st.LastPoll) { try { $connected = (((Get-Date) - [datetime]$st.LastPoll).TotalSeconds -lt ([Math]::Max(30, $SatDiscordPollSeconds * 3))) } catch {} }
+
+    $pending = @(foreach ($k in $st.Pending.Keys) { $p = $st.Pending[$k]; [PSCustomObject]@{ UserId = $k; Name = "$($p.Name)"; Action = "$($p.Action)"; Expires = "$($p.Expires)" } })
+
+    [PSCustomObject]@{
+        UpdatedAt     = (Get-Date).ToString('o')
+        Enabled       = [bool]$SatDiscordBotEnabled
+        HasBotToken   = [bool]$SatDiscordBotToken
+        ChannelSet    = [bool]$SatDiscordBotChannel
+        ChannelId     = $SatDiscordBotChannel
+        Prefix        = $SatDiscordCommandPrefix
+        PollSeconds   = $SatDiscordPollSeconds
+        BotUser       = $st.BotUser
+        Connected     = $connected
+        LastPoll      = $st.LastPoll
+        LastError     = $st.LastError
+        Pending       = $pending
+        Approved      = @($approved | ForEach-Object { [PSCustomObject]@{ Id = $_.Id; Name = $_.Name } })
+        ApprovedCount = @($approved).Count
+        Users         = @($users | Sort-Object Total -Descending)
+        CommandTotals = $cmdTotals
+        TotalCommands = (@($cmdTotals | Measure-Object Count -Sum).Sum)
+        Today         = $today
+        Recent        = @($log | Select-Object -Last 60 | Sort-Object t -Descending)
     }
 }

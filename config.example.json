@@ -14,5 +14,12 @@
   "Watchdog": true,
   "SteamCmd": "C:\\steamcmd\\steamcmd.exe",
   "SteamAppId": "1690800",
-  "NickMap": {}
+  "NickMap": {},
+  "DiscordBotEnabled": false,
+  "DiscordBotChannel": "",
+  "DiscordCommandPrefix": "!",
+  "DiscordPollSeconds": 10,
+  "DiscordApprovedUsers": [
+    { "Id": "000000000000000000", "Name": "Example Pioneer" }
+  ]
 }

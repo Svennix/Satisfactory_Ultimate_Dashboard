@@ -20,6 +20,7 @@
   <button class="tab active" data-view="dashboard">📊 Dashboard</button>
   <button class="tab" data-view="backups">💾 Backups</button>
   <button class="tab" data-view="maintenance">🔧 Maintenance</button>
+  <button class="tab" data-view="discord">🤖 Discord Bot</button>
   <button class="tab" data-view="settings">⚙ Settings</button>
 </nav>
 
@@ -211,6 +212,76 @@
       </table>
     </section>
   </div><!-- /view-maintenance -->
+
+  <div id="view-discord" class="view hidden">
+    <section class="tiles">
+      <div class="tile big"><div class="label">Bot status</div><div class="value" id="dBot">—</div><div class="sub" id="dBotSub">&nbsp;</div></div>
+      <div class="tile"><div class="label">Commands today</div><div class="value" id="dToday">—</div><div class="sub" id="dTotal">&nbsp;</div></div>
+      <div class="tile"><div class="label">Approved users</div><div class="value" id="dApprovedCount">—</div><div class="sub">on the allow-list</div></div>
+      <div class="tile"><div class="label">Channel</div><div class="value sm" id="dChannel">—</div><div class="sub" id="dPrefix">&nbsp;</div></div>
+      <div class="tile"><div class="label">Pending</div><div class="value sm" id="dPending">—</div><div class="sub">awaiting confirm</div></div>
+    </section>
+
+    <section class="panel">
+      <h2>Configuration <span class="dim">— token is write-only; it's never shown back</span></h2>
+      <div class="form">
+        <label><input type="checkbox" id="dEnabled"> Bot enabled</label>
+        <label>Channel ID <input id="dChannelId" style="width:200px" placeholder="numeric channel id"></label>
+        <label>Prefix <input id="dPrefixIn" style="width:50px" maxlength="3" value="!"></label>
+        <label>Poll every <input type="number" id="dPoll" min="3" max="120" value="10" style="width:64px"> s</label>
+      </div>
+      <div class="settings-grid" style="margin-top:12px">
+        <label>Bot token <input type="password" id="dToken" autocomplete="off" placeholder="paste to set / rotate"></label>
+      </div>
+      <div class="ctl-row" style="margin-top:14px">
+        <input type="password" id="dCtlToken" placeholder="control token" autocomplete="off">
+        <button id="saveDiscord" class="btn ok">Save bot settings</button>
+        <span class="ctl-result" id="dSaveResult"></span>
+      </div>
+      <p class="muted" id="dError"></p>
+      <p class="muted">These are <strong>text-prefix</strong> commands, not native slash commands — a polling bot can only read normal messages. In the Discord developer portal the bot needs the <strong>Message Content Intent</strong> enabled, and must be invited to the server with permission to read &amp; send messages in this channel.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Approved users <span class="dim">— may run restart / update / backup / schedule</span></h2>
+      <div class="ctl-row" style="margin-bottom:12px">
+        <input id="dNewId" placeholder="Discord user ID" style="width:210px" inputmode="numeric" autocomplete="off">
+        <input id="dNewName" placeholder="Label (e.g. Svenni)" style="width:170px" autocomplete="off">
+        <button id="dAddApproved" class="btn ok">＋ Add user</button>
+        <span class="ctl-result" id="dAddResult"></span>
+      </div>
+      <table class="players" id="dApprovedTable">
+        <thead><tr><th>Label</th><th>Discord ID</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="muted">Edit a label or ID inline; ✕ removes a user. Changes apply when you press <strong>Save bot settings</strong> above. Anyone can run the read-only commands (<code>status</code>, <code>players</code>, <code>leaderboard</code>, …); users can run <code id="dWhoamiHint">!whoami</code> in Discord to find their own ID.</p>
+    </section>
+
+    <div class="grid2">
+      <section class="panel">
+        <h2>Command usage <span class="dim">— per user</span></h2>
+        <table class="players" id="dUsers">
+          <thead><tr><th></th><th>User</th><th>Total</th><th>Breakdown</th><th>Denied</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+      <section class="panel">
+        <h2>By command</h2>
+        <table class="players" id="dCmdTotals">
+          <thead><tr><th>Command</th><th>Count</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </div>
+
+    <section class="panel">
+      <h2>Command log <span class="dim">— every attempt, newest first</span></h2>
+      <table class="players" id="dLog">
+        <thead><tr><th>When</th><th>User</th><th>Command</th><th>Args</th><th>Status</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div><!-- /view-discord -->
 
   <div id="view-settings" class="view hidden">
     <section class="panel">

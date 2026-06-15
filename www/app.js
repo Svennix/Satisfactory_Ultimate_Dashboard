@@ -111,6 +111,7 @@ async function renderPlayers(){
 }
 
 const esc = s => String(s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const escAttr = s => String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 function renderHeatmap(grid){
   if(!grid) return;
@@ -281,6 +282,113 @@ document.getElementById('saveSettings')?.addEventListener('click', async ()=>{
   }catch(e){ out.textContent = '✗ '+e.message; }
 });
 
+// ---- Discord Bot tab ----
+let discordDirty = false;
+async function renderDiscord(){
+  const d = await getJSON('data/discord.json');
+  const connected = d.Enabled && d.HasBotToken && d.ChannelSet && d.Connected;
+  $('#dBot').textContent = !d.Enabled ? 'disabled' : !d.HasBotToken ? 'no token' : !d.ChannelSet ? 'no channel' : d.Connected ? 'online' : 'offline';
+  $('#dBot').style.color = connected ? 'var(--ok)' : d.Enabled ? 'var(--danger)' : 'var(--dim)';
+  $('#dBotSub').textContent = d.BotUser ? ('as '+d.BotUser) : ' ';
+  $('#dToday').textContent = d.Today ?? 0;
+  $('#dTotal').textContent = (d.TotalCommands ?? 0) + ' all-time';
+  $('#dApprovedCount').textContent = d.ApprovedCount ?? 0;
+  $('#dChannel').textContent = d.ChannelId || '—';
+  $('#dPrefix').textContent = d.Prefix ? ('prefix '+d.Prefix) : ' ';
+  $('#dPending').textContent = (d.Pending && d.Pending.length) ? d.Pending.length : '0';
+  $('#dError').textContent = d.LastError ? ('⚠ last error: '+d.LastError) : '';
+  $('#dWhoamiHint').textContent = (d.Prefix||'!')+'whoami';
+
+  if(!discordDirty){
+    $('#dEnabled').checked = !!d.Enabled;
+    $('#dChannelId').value = d.ChannelId || '';
+    $('#dPrefixIn').value = d.Prefix || '!';
+    $('#dPoll').value = d.PollSeconds || 10;
+    $('#dToken').placeholder = d.HasBotToken ? 'saved — paste to rotate' : 'paste to set';
+    approvedList = asArray(d.Approved).map(u=>({Id:String(u.Id), Name:String(u.Name)}));
+    renderApprovedTable();
+  }
+
+  $('#dUsers tbody').innerHTML = asArray(d.Users).map(u=>`<tr>
+    <td><span class="dot ${u.Approved?'on':''}"></span></td>
+    <td class="name">${esc(u.Name)}${u.Approved?'':' <span class="dim">(not approved)</span>'}</td>
+    <td>${u.Total}</td>
+    <td class="dim">${asArray(u.Commands).map(c=>`${esc(c.Command)}×${c.Count}`).join(', ')||'—'}</td>
+    <td>${u.Denied?'<span style="color:var(--danger)">'+u.Denied+'</span>':'0'}</td></tr>`).join('')
+    || '<tr><td colspan="5" class="dim">no commands yet</td></tr>';
+
+  $('#dCmdTotals tbody').innerHTML = asArray(d.CommandTotals).map(c=>`<tr><td>${esc(c.Command)}</td><td>${c.Count}</td></tr>`).join('')
+    || '<tr><td colspan="2" class="dim">none yet</td></tr>';
+
+  const statusColor = s => ({denied:'var(--danger)',executed:'var(--ok)',ok:'var(--dim)',pending:'var(--warn)',unknown:'var(--warn)',expired:'var(--warn)',cancelled:'var(--dim)'}[s]||'var(--dim)');
+  $('#dLog tbody').innerHTML = asArray(d.Recent).map(r=>`<tr>
+    <td>${new Date(r.t).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})}</td>
+    <td>${esc(r.userName||r.userId)}</td>
+    <td>${esc(r.command)}</td>
+    <td class="dim">${esc(r.args||'')}</td>
+    <td style="color:${statusColor(r.status)}">${esc(r.status)}</td></tr>`).join('')
+    || '<tr><td colspan="5" class="dim">no commands logged yet</td></tr>';
+}
+
+const discordView = document.getElementById('view-discord');
+if (discordView) discordView.addEventListener('input', ()=>discordDirty=true);
+
+// approved-users editor (add / inline-edit / delete)
+let approvedList = [];
+function renderApprovedTable(){
+  const tb = $('#dApprovedTable tbody');
+  if(!tb) return;
+  tb.innerHTML = approvedList.map((u,i)=>`<tr data-i="${i}">
+    <td><input class="apName" data-i="${i}" value="${escAttr(u.Name)}" style="width:100%" autocomplete="off"></td>
+    <td><input class="apId" data-i="${i}" value="${escAttr(u.Id)}" style="width:100%;font-family:var(--mono)" inputmode="numeric" autocomplete="off"></td>
+    <td><button class="btn danger apDel" data-i="${i}" style="padding:4px 11px" title="remove">✕</button></td></tr>`).join('')
+    || '<tr><td colspan="3" class="dim">no approved users yet — add one above</td></tr>';
+}
+
+document.getElementById('dAddApproved')?.addEventListener('click', ()=>{
+  const out=$('#dAddResult');
+  const id=$('#dNewId').value.trim(), name=$('#dNewName').value.trim();
+  if(!/^\d{5,}$/.test(id)){ out.textContent='✗ enter a numeric Discord ID'; out.style.color='var(--danger)'; return; }
+  if(approvedList.some(u=>String(u.Id)===id)){ out.textContent='✗ already on the list'; out.style.color='var(--danger)'; return; }
+  approvedList.push({Id:id, Name:name||id});
+  discordDirty=true; renderApprovedTable();
+  $('#dNewId').value=''; $('#dNewName').value='';
+  out.textContent='✓ added — remember to Save'; out.style.color='var(--ok)';
+});
+
+const apTableBody = document.querySelector('#dApprovedTable tbody');
+if(apTableBody){
+  apTableBody.addEventListener('click', e=>{
+    const del=e.target.closest('.apDel'); if(!del) return;
+    approvedList.splice(parseInt(del.dataset.i,10),1);
+    discordDirty=true; renderApprovedTable();
+  });
+  apTableBody.addEventListener('input', e=>{
+    const i=parseInt(e.target.dataset.i,10); if(isNaN(i)||!approvedList[i]) return;
+    if(e.target.classList.contains('apName')) approvedList[i].Name=e.target.value;
+    else if(e.target.classList.contains('apId')) approvedList[i].Id=e.target.value;
+    discordDirty=true;
+  });
+}
+
+document.getElementById('saveDiscord')?.addEventListener('click', async ()=>{
+  const out=$('#dSaveResult'); out.textContent='…';
+  const approved = approvedList
+    .map(u=>({Id:String(u.Id).trim(), Name:(String(u.Name).trim()||String(u.Id).trim())}))
+    .filter(u=>/^\d{5,}$/.test(u.Id));
+  const body={ action:'set-discord', token:$('#dCtlToken').value,
+    enabled:$('#dEnabled').checked, channel:$('#dChannelId').value.trim(),
+    prefix:$('#dPrefixIn').value.trim()||'!', poll:parseInt($('#dPoll').value||'10',10),
+    approved, botToken:$('#dToken').value };
+  try{
+    const r=await fetch('api/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json();
+    out.textContent = j.ok ? '✓ '+j.result : '✗ '+(j.error||'failed');
+    out.style.color = j.ok ? 'var(--ok)' : 'var(--danger)';
+    if(j.ok){ discordDirty=false; $('#dToken').value=''; setTimeout(refresh, 900); }
+  }catch(e){ out.textContent='✗ '+e.message; }
+});
+
 // tabs
 document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
@@ -309,6 +417,7 @@ document.querySelectorAll('.btn[data-action]').forEach(b=>{
 async function refresh(){
   try{ await renderState(); await renderPlayers(); await renderCharts(); await renderBackups(); await renderMaintenance(); await renderSettings(); }
   catch(e){ console.error(e); }
+  try{ await renderDiscord(); }catch(e){ console.error(e); }
 }
 charts.tps = lineChart('#chartTps','TPS','#3fb950');
 charts.online = lineChart('#chartOnline','Online','#58a6ff');

@@ -91,6 +91,28 @@ while ($listener.IsListening) {
                         & (Join-Path $PSScriptRoot 'collect.ps1')   # refresh settings.json immediately
                         'settings saved (web port/binds/token changes apply after a web-server restart)'
                     }
+                    'set-discord' {
+                        $approved = @()
+                        foreach ($u in @($cmd.approved)) {
+                            if (-not $u) { continue }
+                            $id = "$($u.Id)".Trim(); if (-not $id) { continue }
+                            $nm = if ("$($u.Name)".Trim()) { "$($u.Name)".Trim() } else { $id }
+                            $approved += @{ Id = $id; Name = $nm }
+                        }
+                        $upd = @{
+                            DiscordBotEnabled    = [bool]$cmd.enabled
+                            DiscordBotChannel    = "$($cmd.channel)".Trim()
+                            DiscordCommandPrefix = if ("$($cmd.prefix)".Trim()) { "$($cmd.prefix)".Trim() } else { '!' }
+                            DiscordPollSeconds   = if ([int]$cmd.poll -ge 3) { [int]$cmd.poll } else { 10 }
+                            DiscordApprovedUsers = $approved
+                        }
+                        Set-SatConfig -Updates $upd
+                        # Bot token: blank = keep current, otherwise rotate. ($null leaves unchanged.)
+                        $newBot = if ($null -ne $cmd.botToken -and "$($cmd.botToken)".Trim()) { "$($cmd.botToken)" } else { $null }
+                        if ($newBot) { Set-SatSecrets -DiscordBotToken $newBot }
+                        & (Join-Path $PSScriptRoot 'collect.ps1')   # refresh discord.json immediately
+                        'discord bot settings saved (applies within one poll cycle)'
+                    }
                     default  { throw "unknown action '$($cmd.action)'" }
                 }
                 Send-Text $ctx (@{ ok=$true; result="$result" } | ConvertTo-Json)

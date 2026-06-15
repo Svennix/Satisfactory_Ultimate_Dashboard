@@ -14,6 +14,10 @@ backup-history.log
 *.log
 stop.flag
 
+# ===== Discord bot (runtime state + audit log; secrets live in secrets.local.ps1) =====
+discord-state.json
+discord-commands.jsonl
+
 # ===== OS noise =====
 Thumbs.db
 desktop.ini

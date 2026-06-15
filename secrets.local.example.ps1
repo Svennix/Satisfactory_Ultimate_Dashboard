@@ -4,4 +4,5 @@
 # in satisfactory-settings.ps1.
 # ============================================================
 $Global:SatControlToken   = 'choose-a-strong-random-token'   # required for the control buttons
-$Global:SatDiscordWebhook = ''                               # optional Discord webhook URL
+$Global:SatDiscordWebhook = ''                               # optional Discord webhook URL (outbound notifications)
+$Global:SatDiscordBotToken= ''                               # optional Discord BOT token (inbound /commands listener)

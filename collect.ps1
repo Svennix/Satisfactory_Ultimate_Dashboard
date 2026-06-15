@@ -141,6 +141,11 @@ try {
 $ver = $null
 try { $ver = Update-SatVersionTracking } catch {}
 
+# --- discord.json (bot status + approved users + command usage/log) ---------
+try {
+    Get-SatDiscordReport | ConvertTo-Json -Depth 7 | Set-Content (Join-Path $SatDataDir 'discord.json') -Encoding UTF8
+} catch {}
+
 # --- maintenance.json (watchdog + restart schedule + version + events) ------
 try {
     $rcfg = Get-SatRestartConfig

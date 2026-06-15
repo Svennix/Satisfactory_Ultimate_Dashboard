@@ -93,7 +93,13 @@ Add-Content -Path $SatBackupHistoryLog -Value ($entry -join "`r`n") -Encoding UT
 
 # Surface the outcome on the dashboard event log + Discord
 if ($result.Success) {
-    Write-SatEvent -Category 'backup' -Message "Backup OK: $(Split-Path $result.Path -Leaf) ($(Format-SatBytes $result.Bytes)); pruned $($result.Pruned)." -Discord
+    $sizeStr = Format-SatBytes $result.Bytes
+    $last24  = @(Get-ChildItem $SatBackupDir -Filter '*.sav' -ErrorAction SilentlyContinue |
+                 Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-1) }).Count
+    # Local event log keeps the detail (filename + prune count) for the dashboard...
+    Write-SatEvent -Category 'backup' -Message "Backup OK: $(Split-Path $result.Path -Leaf) ($sizeStr); pruned $($result.Pruned)."
+    # ...Discord gets a concise, filename-free summary.
+    Send-SatDiscord -Category 'backup' -Message ('Backup done in {0} · {1} · {2} backup{3} in the last 24h.' -f $dur, $sizeStr, $last24, $(if ($last24 -eq 1) { '' } else { 's' }))
 } else {
     Write-SatEvent -Category 'backup' -Message "Backup FAILED: $($result.Error)" -Level 'error' -Discord
 }

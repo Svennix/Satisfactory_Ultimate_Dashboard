@@ -27,6 +27,12 @@ $SatDefaults = @{
     SteamCmd         = 'C:\steamcmd\steamcmd.exe'
     SteamAppId       = '1690800'
     NickMap          = @{}
+    # --- Discord command bot (polls a channel with a bot token) ---
+    DiscordBotEnabled    = $false
+    DiscordBotChannel    = ''         # channel ID to watch for commands
+    DiscordCommandPrefix = '!'        # text-message prefix (NOT native slash commands)
+    DiscordPollSeconds   = 10         # how often the listener polls Discord
+    DiscordApprovedUsers = @()        # [{ Id = '<discord user id>'; Name = '<label>' }, ...]
 }
 
 # --- Overlay config.json ----------------------------------------------------
@@ -43,6 +49,16 @@ if (Test-Path $SatConfigFile) {
 $nick = @{}
 if ($cfg.NickMap -is [hashtable]) { $nick = $cfg.NickMap }
 elseif ($cfg.NickMap) { foreach ($p in $cfg.NickMap.PSObject.Properties) { $nick[$p.Name] = "$($p.Value)" } }
+
+# ApprovedUsers may arrive as an array of PSCustomObjects (from JSON); normalize
+# to a clean array of @{ Id; Name } hashtables with string values.
+$approved = @()
+foreach ($u in @($cfg.DiscordApprovedUsers)) {
+    if (-not $u) { continue }
+    $id = "$($u.Id)".Trim(); if (-not $id) { continue }
+    $nm = if ("$($u.Name)".Trim()) { "$($u.Name)".Trim() } else { $id }
+    $approved += @{ Id = $id; Name = $nm }
+}
 
 # --- Assign globals (env values from config, paths derived) -----------------
 $Global:SatRoot       = $cfg.Root
@@ -82,10 +98,22 @@ $Global:SatDiscordWebhook = ''   # real value from secrets.local.ps1
 
 $Global:SatNickMap = $nick
 
-# Keys that the Settings tab is allowed to write back to config.json.
+# --- Discord command bot ----------------------------------------------------
+$Global:SatDiscordApi          = 'https://discord.com/api/v10'
+$Global:SatDiscordBotEnabled   = [bool]$cfg.DiscordBotEnabled
+$Global:SatDiscordBotChannel   = "$($cfg.DiscordBotChannel)".Trim()
+$Global:SatDiscordCommandPrefix= if ("$($cfg.DiscordCommandPrefix)".Trim()) { "$($cfg.DiscordCommandPrefix)".Trim() } else { '!' }
+$Global:SatDiscordPollSeconds  = [int]$cfg.DiscordPollSeconds; if ($SatDiscordPollSeconds -lt 3) { $Global:SatDiscordPollSeconds = 10 }
+$Global:SatDiscordApprovedUsers= @($approved)
+$Global:SatDiscordBotToken     = ''   # real value from secrets.local.ps1
+$Global:SatDiscordState        = Join-Path $SatDashboard 'discord-state.json'
+$Global:SatDiscordCmdLog       = Join-Path $SatDashboard 'discord-commands.jsonl'
+
+# Keys that the Settings/Discord tabs are allowed to write back to config.json.
 $Global:SatConfigKeys = @('Root','SaveDir','ChildProc','TaskName','ApiBase','WebPort','WebBinds',
     'BackupDir','BackupKeepRecent','BackupKeepDaily','BackupKeepWeekly','BackupKeepMonthly',
-    'Watchdog','SteamCmd','SteamAppId','NickMap')
+    'Watchdog','SteamCmd','SteamAppId','NickMap',
+    'DiscordBotEnabled','DiscordBotChannel','DiscordCommandPrefix','DiscordPollSeconds','DiscordApprovedUsers')
 
 # --- Local secrets (gitignored) ---------------------------------------------
 # Real control token + Discord webhook live in secrets.local.ps1, which is NOT

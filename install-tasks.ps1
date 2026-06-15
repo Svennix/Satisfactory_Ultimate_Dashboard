@@ -47,11 +47,27 @@ $bootTrigger = New-ScheduledTaskTrigger -AtStartup
 Register-DashTask -Name 'Satisfactory Dashboard Web' -Script 'serve.ps1' `
     -Trigger $bootTrigger -Desc 'Serves the Satisfactory dashboard on the management network.'
 
+# 3b. Discord command listener - at boot, long-running (no execution time limit),
+#     restarts itself if it ever falls over.
+$discordAction = New-ScheduledTaskAction -Execute $pwsh `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $SatDashboard 'discord-listen.ps1')`""
+$discordSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew `
+    -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+Unregister-ScheduledTask -TaskName 'Satisfactory Dashboard Discord Bot' -Confirm:$false -ErrorAction SilentlyContinue
+Register-ScheduledTask -TaskName 'Satisfactory Dashboard Discord Bot' `
+    -Description 'Polls Discord for /commands from approved users (restart, update, backup, stats).' `
+    -Action $discordAction -Trigger (New-ScheduledTaskTrigger -AtStartup) `
+    -Principal $principal -Settings $discordSettings -ErrorAction Stop | Out-Null
+Write-Host "  registered: Satisfactory Dashboard Discord Bot" -ForegroundColor Green
+
 # 4. Restart task - from restart-config.json (managed via the Maintenance tab)
 Register-SatRestartTask
 $rc = Get-SatRestartConfig
 Write-Host ("  restart task: {0} ({1} at {2}, update={3})" -f ($(if($rc.Enabled){'enabled'}else{'disabled'})), $rc.Frequency, $rc.Time, $rc.Update) -ForegroundColor Green
 
-Write-Host "`nDone. Starting collector + web now..." -ForegroundColor Cyan
+Write-Host "`nDone. Starting collector + Discord listener now..." -ForegroundColor Cyan
 Start-ScheduledTask -TaskName 'Satisfactory Dashboard Collector'
-Write-Host "Backup scheduled daily at $BackupAt. Web server starts at boot (start it now if needed)." -ForegroundColor DarkGray
+Start-ScheduledTask -TaskName 'Satisfactory Dashboard Discord Bot'
+Write-Host "Backup scheduled daily at $BackupAt. Web server + Discord bot start at boot (started now too)." -ForegroundColor DarkGray
+Write-Host "Configure the Discord bot (token, channel, approved users) on the Discord Bot tab." -ForegroundColor DarkGray
